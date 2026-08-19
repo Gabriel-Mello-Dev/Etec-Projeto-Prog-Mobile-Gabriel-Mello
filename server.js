@@ -11,11 +11,13 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 4000;
 
-let pool;
+let pool = null;
+let dbConnected = false;
 
 async function initDb() {
   pool = mysql.createPool({
     host: process.env.DB_HOST,
+    port: process.env.DB_PORT || 3306,
     user: process.env.DB_USER,
     password: process.env.DB_PASS,
     database: process.env.DB_NAME,
@@ -24,14 +26,44 @@ async function initDb() {
     queueLimit: 0
   });
 
-  // Testa a conexão com o banco
-  await pool.query('SELECT 1');
+  try {
+    await pool.query('SELECT 1');
 
-  console.log('Conexão com MySQL estabelecida');
+    dbConnected = true;
+
+    console.log('Conexão com MySQL estabelecida');
+  } catch (err) {
+    dbConnected = false;
+
+    console.error('MySQL indisponível:', err.message);
+    console.log('Servidor continuará funcionando em modo de teste.');
+  }
 }
 
-// Listar todos os produtos
+// Rota de teste
+app.get('/', (req, res) => {
+  res.json({
+    message: 'API Projetofinal funcionando!',
+    database: dbConnected ? 'conectado' : 'indisponível'
+  });
+});
+
+// Status da API
+app.get('/api/status', (req, res) => {
+  res.json({
+    api: 'online',
+    database: dbConnected ? 'online' : 'offline'
+  });
+});
+
+// Listar produtos
 app.get('/api/products', async (req, res) => {
+  if (!dbConnected) {
+    return res.status(503).json({
+      error: 'Banco de dados indisponível'
+    });
+  }
+
   try {
     const [rows] = await pool.query(
       'SELECT * FROM products ORDER BY id DESC'
@@ -40,6 +72,7 @@ app.get('/api/products', async (req, res) => {
     res.json(rows);
   } catch (err) {
     console.error(err);
+
     res.status(500).json({
       error: 'Erro ao listar produtos'
     });
@@ -48,6 +81,12 @@ app.get('/api/products', async (req, res) => {
 
 // Inserir produto
 app.post('/api/products', async (req, res) => {
+  if (!dbConnected) {
+    return res.status(503).json({
+      error: 'Banco de dados indisponível'
+    });
+  }
+
   const { name, description, price } = req.body;
 
   if (!name || price === undefined) {
@@ -62,16 +101,15 @@ app.post('/api/products', async (req, res) => {
       [name, description || null, price]
     );
 
-    const insertedId = result.insertId;
-
     const [rows] = await pool.query(
       'SELECT * FROM products WHERE id = ?',
-      [insertedId]
+      [result.insertId]
     );
 
     res.status(201).json(rows[0]);
   } catch (err) {
     console.error(err);
+
     res.status(500).json({
       error: 'Erro ao inserir produto'
     });
@@ -80,12 +118,16 @@ app.post('/api/products', async (req, res) => {
 
 // Consultar produto por ID
 app.get('/api/products/:id', async (req, res) => {
-  const id = req.params.id;
+  if (!dbConnected) {
+    return res.status(503).json({
+      error: 'Banco de dados indisponível'
+    });
+  }
 
   try {
     const [rows] = await pool.query(
       'SELECT * FROM products WHERE id = ?',
-      [id]
+      [req.params.id]
     );
 
     if (rows.length === 0) {
@@ -97,29 +139,24 @@ app.get('/api/products/:id', async (req, res) => {
     res.json(rows[0]);
   } catch (err) {
     console.error(err);
+
     res.status(500).json({
       error: 'Erro ao consultar produto'
     });
   }
 });
 
-// Inicializa banco e servidor
-initDb()
-  .then(() => {
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`API rodando na porta ${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error('Erro ao conectar ao banco:', err);
-    process.exit(1);
+// Inicia servidor mesmo sem banco
+initDb().finally(() => {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`API rodando na porta ${PORT}`);
   });
+});
 
-// Tratamento de erros não tratados
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
 });
 
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception thrown:', err);
+  console.error('Uncaught Exception:', err);
 });
